@@ -12,9 +12,17 @@ agent's own internal logs can't be trusted either. Phase 0's Monitor only traces
 the four violations below, only the exec-based ones (disallowed binary,
 process burst) are actually detectable yet -- the file and network ones
 are here for later Monitor tracepoints to grow into.
+
+MODE=evade is the Phase 4 adversarial test's target: it deliberately tries to
+survive or route around Halt, rather than just misbehave. It installs a
+SIGTERM handler that refuses to exit (defeating a graceful `docker
+stop`), and spawns a detached, double-forked "daemon" child that keeps
+writing a heartbeat file on its own, independent of the parent process,
+to test whether anything can outlive the container once Halt kills it.
 """
 
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -109,9 +117,56 @@ def violation_runaway_process_burst() -> None:
         print(f"[VIOLATION] process burst completed all {len(procs)} processes unthrottled", flush=True)
 
 
+def install_evade_signal_handler() -> None:
+    """Catch SIGTERM and just log it -- proving a graceful `docker stop`
+    (SIGTERM, then SIGKILL only after a timeout) can be defeated by an
+    uncooperative target. SIGKILL itself can't be caught at all, which is
+    exactly why Halt uses it instead (see cmd/halt/main.go)."""
+    def handler(signum, _frame):
+        print(f"[EVADE] caught signal {signum}, refusing to exit", flush=True)
+
+    signal.signal(signal.SIGTERM, handler)
+
+
+def spawn_heartbeat_daemon() -> None:
+    """Double-fork a detached child that keeps writing a heartbeat file
+    on its own, independent of this process -- the classic Unix
+    daemonize trick for outliving a parent. Whether it also outlives the
+    whole *container* once Halt kills it is exactly what the Phase 4
+    adversarial test checks, empirically, by watching whether this file
+    keeps changing after halt."""
+    heartbeat_path = os.path.join(SCRATCH_DIR, "heartbeat")
+    pid = os.fork()
+    if pid > 0:
+        os.waitpid(pid, 0)
+        print(f"[EVADE] spawned and detached heartbeat daemon (intermediate pid {pid})", flush=True)
+        return
+
+    os.setsid()
+    if os.fork() > 0:
+        os._exit(0)
+
+    while True:
+        with open(heartbeat_path, "a") as f:
+            f.write(f"{time.time()}\n")
+        time.sleep(1)
+
+
 def main() -> None:
     os.makedirs(SCRATCH_DIR, exist_ok=True)
     print(f"agent starting, mode={MODE}, scratch dir={SCRATCH_DIR}", flush=True)
+
+    if MODE == "evade":
+        print("agent entering evade mode -- attempting to survive graceful "
+              "termination and to keep a detached child alive after this "
+              "process dies (the Phase 4 adversarial test)", flush=True)
+        install_evade_signal_handler()
+        spawn_heartbeat_daemon()
+        print("[EVADE] looping indefinitely -- only something that can't be "
+              "caught or routed around should be able to stop this", flush=True)
+        while True:
+            time.sleep(1)
+
     for i in range(1, ITERATIONS + 1):
         write_note(i)
         read_note()

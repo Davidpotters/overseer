@@ -8,7 +8,14 @@
 # it varies by host.
 set -euo pipefail
 
-DOCKER_GID="$(stat -c '%g' /var/run/docker.sock 2>/dev/null || stat -f '%g' /var/run/docker.sock)"
+# Resolved through the daemon itself, not the local shell: a -v bind
+# mount's source path is resolved by whatever host the Docker daemon
+# actually runs on (colima's Linux VM here, not this Mac), and so must
+# this stat be -- a local `stat /var/run/docker.sock` fails outright on
+# macOS since that path only exists inside the VM. This one throwaway
+# container also makes the lookup portable to any Docker host, colima
+# or not.
+DOCKER_GID="$(docker run --rm -v /var/run/docker.sock:/var/run/docker.sock alpine:3.20 stat -c '%g' /var/run/docker.sock)"
 
 docker build -t overseer/halt:dev "$(dirname "$0")/../.." -f "$(dirname "$0")/Dockerfile"
 
