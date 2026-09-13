@@ -4,6 +4,12 @@
 *.test
 *.out
 
+# bpf2go's generated output -- regenerated fresh by cmd/monitor's own
+# Dockerfile on every build (`go generate`); never meant to be committed.
+cmd/monitor/*_bpfel.go
+cmd/monitor/*_bpfeb.go
+cmd/monitor/*.o
+
 # Certs and secrets generated at deploy time, never committed
 *.pem
 *.key
