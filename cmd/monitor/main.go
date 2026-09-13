@@ -57,8 +57,23 @@ func main() {
 		log.Fatalf("removing memlock limit: %v", err)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(*auditPath), 0o755); err != nil {
+	// 0o777, not 0o755: Monitor runs as root (needs eBPF privilege) but
+	// Report runs unprivileged and must be able to create its own
+	// alert-log file in this same shared directory -- a directory
+	// holding nothing but metadata-only log files, same reasoning as
+	// audit.go's 0o644 on the files themselves.
+	auditDir := filepath.Dir(*auditPath)
+	if err := os.MkdirAll(auditDir, 0o777); err != nil {
 		log.Fatalf("creating audit log directory: %v", err)
+	}
+	// MkdirAll only applies the given mode when it actually creates the
+	// directory -- Docker itself pre-creates a named volume's mount
+	// point (root-owned, 0o755) before this process ever runs, so
+	// MkdirAll alone silently leaves that mode in place. Chmod forces it
+	// regardless of which case this is. Found by testing the real
+	// container, not anticipated up front.
+	if err := os.Chmod(auditDir, 0o777); err != nil {
+		log.Fatalf("setting audit log directory permissions: %v", err)
 	}
 	w, err := audit.OpenWriter(*auditPath)
 	if err != nil {
