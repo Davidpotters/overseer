@@ -52,6 +52,15 @@ type Record struct {
 }
 
 // Writer appends records to a log file, chaining each one to the last.
+//
+// A Writer assumes it is the sole writer of its file: it keeps the
+// chain's tip (lastHash, seq) in memory rather than re-reading the file
+// on every append. Two independent Writer instances appending to the
+// same path would each hold a stale, diverging view of the tip and
+// silently corrupt the chain the moment they interleave -- this is
+// exactly why Report owns a separate log file for its own alerts
+// instead of appending into Monitor's, even though both import this
+// same package. Found while designing Report, not after shipping it.
 type Writer struct {
 	mu       sync.Mutex
 	f        *os.File
@@ -63,7 +72,12 @@ type Writer struct {
 // already holds records, resumes the chain from its last entry instead
 // of silently starting a new one -- a restart must not look like a gap.
 func OpenWriter(path string) (*Writer, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
+	// 0o644, not 0o600: Monitor (root, for eBPF) and Report (unprivileged)
+	// both need to open this file, and the log holds metadata only --
+	// syscall/exec facts, never payload content (see threat-model.md's
+	// Boundary 3) -- so read access being wide isn't a confidentiality
+	// concern. Only the owning process's Writer can append to it.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("opening audit log: %w", err)
 	}
