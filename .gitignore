@@ -1,0 +1,22 @@
+# Go
+/bin/
+*.exe
+*.test
+*.out
+
+# Certs and secrets generated at deploy time, never committed
+*.pem
+*.key
+*.crt
+kubeconfig*
+
+# Local dev/OS noise
+.DS_Store
+.env
+.venv/
+__pycache__/
+*.pyc
+
+# Editor
+.vscode/
+.idea/
