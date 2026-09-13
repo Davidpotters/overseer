@@ -1,0 +1,126 @@
+name: overseer-ci
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  codeql:
+    name: SAST (CodeQL)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read # CodeQL reads workflow-run metadata for its own telemetry
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: go
+
+      # Not autobuild: cmd/monitor's BPF bindings don't exist until `go
+      # generate` compiles bpf/execwatch.c via clang, which needs the
+      # multiarch symlink fix documented in cmd/monitor/Dockerfile --
+      # autobuild has no way to know any of that on its own.
+      - name: Install eBPF build toolchain and build manually
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang llvm libbpf-dev
+          sudo ln -sf /usr/include/"$(uname -m)"-linux-gnu/asm /usr/include/asm
+          go generate ./cmd/monitor/...
+          go build ./...
+
+      - uses: github/codeql-action/analyze@v3
+        with:
+          upload: never
+          output: sarif-results
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codeql-results
+          path: sarif-results
+
+  secrets-scan:
+    name: Secrets scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-scan-sign:
+    name: Build, scan, sign (${{ matrix.component }})
+    needs: [codeql, secrets-scan]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: monitor
+            dockerfile: cmd/monitor/Dockerfile
+            context: .
+          - component: report
+            dockerfile: cmd/report/Dockerfile
+            context: .
+          - component: halt
+            dockerfile: cmd/halt/Dockerfile
+            context: .
+          - component: toy-agent
+            dockerfile: toy-agent/Dockerfile
+            context: toy-agent
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # for cosign's keyless signing (GitHub OIDC, no stored key)
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: vars
+        run: echo "tag=sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build image
+        run: |
+          docker build -f "${{ matrix.dockerfile }}" \
+            -t "ghcr.io/davidpotters/overseer-${{ matrix.component }}:${{ steps.vars.outputs.tag }}" \
+            "${{ matrix.context }}"
+
+      # Fails the build on Critical/High findings, same gate as guardrail's.
+      - name: Scan image (Trivy)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ghcr.io/davidpotters/overseer-${{ matrix.component }}:${{ steps.vars.outputs.tag }}
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0.24.2
+        with:
+          image: ghcr.io/davidpotters/overseer-${{ matrix.component }}:${{ steps.vars.outputs.tag }}
+          format: spdx-json
+          output-file: sbom-${{ matrix.component }}.spdx.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ matrix.component }}
+          path: sbom-${{ matrix.component }}.spdx.json
+
+      - name: Push image
+        run: docker push "ghcr.io/davidpotters/overseer-${{ matrix.component }}:${{ steps.vars.outputs.tag }}"
+
+      - uses: sigstore/cosign-installer@v4.1.2
+
+      # Keyless signing, same as guardrail: cosign requests a short-lived
+      # cert from Sigstore's Fulcio CA using this job's own GitHub OIDC
+      # identity -- no long-lived signing key to generate, store, or leak.
+      - name: Sign image
+        run: cosign sign --yes "ghcr.io/davidpotters/overseer-${{ matrix.component }}:${{ steps.vars.outputs.tag }}"
