@@ -8,7 +8,7 @@ watch is doing something it shouldn't, tell a human, and be able to
 stop it. It never acts on its own judgment; a human decides whether to
 pull the trigger.
 
-**Status: v0 through v4 are complete.** Every phase was proven against
+**Status: Phase 0 through Phase 4 are complete.** Every phase was proven against
 a live target rather than left as a design claim; the roadmap below
 says exactly how each one was checked.
 
@@ -80,26 +80,26 @@ flowchart TD
 
 ## Roadmap
 
-- [x] **v0 — Monitor.** A custom eBPF tracepoint probe on
+- [x] **Phase 0 — Monitor.** A custom eBPF tracepoint probe on
   `syscalls:sys_enter_execve`, verified against colima's real kernel:
   system-wide capture showed genuine host activity (kindnetd,
   containerd, dockerd) at real volume, correctly hash-chained; scoped to
   one container's cgroup, it showed *only* that container's activity,
   zero noise from the rest of a busy VM.
-- [x] **v1 — Report.** A policy engine tuned against real, measured
+- [x] **Phase 1 — Report.** A policy engine tuned against real, measured
   alert-fatigue numbers, the same empirical discipline as Darvis's
   retrieval threshold: a naive first pass produced 320 alerts for what
   was really two events a human would recognize (libc's PATH-search
   retries one logical exec attempt several times under one pid); tuned
   down to 3: one disallowed exec, the start of a burst, and the burst
   itself.
-- [x] **v2 — Halt.** A ~15-line direct client for the Docker Engine
+- [x] **Phase 2 — Halt.** A ~15-line direct client for the Docker Engine
   API's kill endpoint, deliberately not a graceful stop, deliberately
   not routed through Report.
-- [x] **v3 — CI.** GitHub Actions: CodeQL, gitleaks, then a
+- [x] **Phase 3 — CI.** GitHub Actions: CodeQL, gitleaks, then a
   build/scan/sign gate (Trivy, SBOM, cosign keyless signing) across all
   four images, same shape as this portfolio's other projects.
-- [x] **v4 — Adversarial test.** The toy agent's `MODE=evade`
+- [x] **Phase 4 — Adversarial test.** The toy agent's `MODE=evade`
   specifically tries to survive Halt: it catches and ignores SIGTERM
   (confirmed to run out an entire `docker stop` grace period before
   Docker's own timeout finished it), then double-forks a detached daemon
